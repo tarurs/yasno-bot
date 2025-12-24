@@ -1,4 +1,5 @@
 aiogram==3.*
 apscheduler
 httpx
+aiohttp
 pytz
