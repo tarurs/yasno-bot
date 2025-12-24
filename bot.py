@@ -28,6 +28,7 @@ scheduler = AsyncIOScheduler(timezone=TIMEZONE)
 # ]
 day_schedule = []
 last_schedule_state = ""  # Хранит текстовое представление графика для сравнения
+last_update_time = None  # Будет хранить объект datetime последнего обновления
 
 
 # ---------- utils ----------
@@ -68,15 +69,17 @@ async def send_notification(text: str):
 # ---------- API parsing ----------
 
 async def update_schedule(is_manual=False):
-    global day_schedule, last_schedule_state
+    global day_schedule, last_schedule_state, last_update_time
     
     try:
         async with httpx.AsyncClient() as client:
             r = await client.get(API_URL, timeout=30)
             data = r.json()
         
-        # Вытаскиваем сырые данные блоков
-        blocks = data["components"][4]["schedule"]["dnipro"]["group_5.1"][2]
+        # Получаем индекс текущего дня недели (0 - понедельник, 6 - воскресенье)
+        current_day_index = datetime.now(TIMEZONE).weekday()
+        # Используем этот индекс для выбора нужного подмассива
+        blocks = data["components"][4]["schedule"]["dnipro"]["group_5.1"][current_day_index]
         
         # Создаем "отпечаток" нового графика для сравнения
         new_state = str(blocks) 
@@ -91,6 +94,8 @@ async def update_schedule(is_manual=False):
 
         # Обновляем состояние
         last_schedule_state = new_state
+        # сохраняем время
+        last_update_time = datetime.now(TIMEZONE)
         
         # Очищаем и пересобираем график (как и раньше)
         scheduler.remove_all_jobs()
@@ -134,18 +139,22 @@ def format_schedule_text():
     
     msg = "📅 **График отключений (Группа 5.1):**\n\n"
     
-    # Обрабатываем список парами (выкл/вкл)
     for i in range(0, len(day_schedule), 2):
         try:
             off_time = day_schedule[i]["time"].strftime("%H:%M")
             on_time = day_schedule[i+1]["time"].strftime("%H:%M")
             msg += f"🌑 {off_time} ———— 💡 {on_time}\n"
         except IndexError:
-            # Если в паре не хватает конечного времени
             off_time = day_schedule[i]["time"].strftime("%H:%M")
             msg += f"🌑 {off_time} ———— 💡 ??\n"
-            
-    msg += "\n*Данные обновляются каждые 30 минут.*"
+    
+    # ФОРМИРУЕМ СТРОКУ ОБНОВЛЕНИЯ
+    if last_update_time:
+        # ДД.ММ.ГГ (через точки обычно привычнее для даты, но сделал как ты просил через двоеточие)
+        str_date = last_update_time.strftime("%d:%m:%y") 
+        str_time = last_update_time.strftime("%H:%M")
+        msg += f"\nПоследнее обновление: {str_date} время {str_time}"
+    
     return msg
 
 # ---------- commands ----------
@@ -211,6 +220,7 @@ if __name__ == "__main__":
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
 
