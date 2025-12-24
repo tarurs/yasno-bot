@@ -1,6 +1,7 @@
 import os
 import asyncio
 from datetime import datetime, timedelta
+from aiohttp import web
 import pytz
 import httpx
 
@@ -137,10 +138,36 @@ async def on_startup():
     scheduler.start()
 
 
+# Handler для проверки здоровья и будущих запросов ESP32
+async def handle_status(request):
+    now = datetime.now(TIMEZONE)
+    status = "ON" if is_power_on(now) else "OFF"
+    return web.json_response({"power": status})
+
 async def main():
     await on_startup()
+    
+    # Настраиваем мини-сервер
+    app = web.Application()
+    app.router.add_get('/', handle_status) # Для Koyeb и ESP32
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    # Koyeb дает порт в переменной окружения PORT, по умолчанию 8000
+    port = int(os.getenv("PORT", 8000))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    
+    print(f"🌐 HTTP Server started on port {port}")
+    await site.start()
+
+    # Запускаем бота
+    print("🤖 Bot polling started")
     await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
 
 
 if __name__ == "__main__":
     asyncio.run(main())
+
