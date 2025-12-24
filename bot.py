@@ -131,6 +131,33 @@ async def update_cmd(message: Message):
     await message.answer("📅 График обновлён")
 
 
+@dp.message(Command("schedule"))
+async def schedule_cmd(message: Message):
+    if not day_schedule:
+        await message.answer("📅 График на сегодня пуст или еще не загружен.")
+        return
+    
+    msg = "📅 **График отключений (Группа 5.1):**\n\n"
+    
+    # Шаг 2 позволяет брать элементы парами: (0,1), (2,3), (4,5)
+    for i in range(0, len(day_schedule), 2):
+        try:
+            # Время выключения (start)
+            off_time = day_schedule[i]["time"].strftime("%H:%M")
+            # Время включения (end)
+            on_time = day_schedule[i+1]["time"].strftime("%H:%M")
+            
+            msg += f"🌑 {off_time} ———— 💡 {on_time}\n"
+        except IndexError:
+            # Если вдруг в списке нечетное количество элементов
+            off_time = day_schedule[i]["time"].strftime("%H:%M")
+            msg += f"🌑 {off_time} ———— 💡 ??\n"
+    
+    msg += "\n*Данные обновляются каждые 30 минут.*"
+    
+    await message.answer(msg, parse_mode="Markdown")
+
+
 # ---------- startup ----------
 
 async def on_startup():
@@ -170,4 +197,5 @@ if __name__ == "__main__":
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
