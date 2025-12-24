@@ -151,9 +151,9 @@ def format_schedule_text():
     # ФОРМИРУЕМ СТРОКУ ОБНОВЛЕНИЯ
     if last_update_time:
         # ДД.ММ.ГГ (через точки обычно привычнее для даты, но сделал как ты просил через двоеточие)
-        str_date = last_update_time.strftime("%d:%m:%y") 
+        str_date = last_update_time.strftime("%d.%m.%y") 
         str_time = last_update_time.strftime("%H:%M")
-        msg += f"\nПоследнее обновление: {str_date} время {str_time}"
+        msg += f"\nПоследнее обновление: {str_date} - {str_time}"
     
     return msg
 
@@ -220,6 +220,7 @@ if __name__ == "__main__":
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
 
