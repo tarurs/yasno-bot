@@ -27,6 +27,7 @@ scheduler = AsyncIOScheduler(timezone=TIMEZONE)
 #   {"type": "end", "time": datetime}
 # ]
 day_schedule = []
+last_schedule_state = ""  # Хранит текстовое представление графика для сравнения
 
 
 # ---------- utils ----------
@@ -66,53 +67,87 @@ async def send_notification(text: str):
 
 # ---------- API parsing ----------
 
-async def update_schedule():
-    global day_schedule
-    day_schedule.clear()
+async def update_schedule(is_manual=False):
+    global day_schedule, last_schedule_state
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(API_URL, timeout=30)
+            data = r.json()
+        
+        # Вытаскиваем сырые данные блоков
+        blocks = data["components"][4]["schedule"]["dnipro"]["group_5.1"][2]
+        
+        # Создаем "отпечаток" нового графика для сравнения
+        new_state = str(blocks) 
+        
+        # Если это не первый запуск и график изменился
+        if last_schedule_state and new_state != last_schedule_state:
+            await send_notification("❗ **Внимание! График отключений изменился!**")
+            # Мы вызовем логику отображения графика чуть ниже
+            should_notify_change = True
+        else:
+            should_notify_change = False
 
-    async with httpx.AsyncClient() as client:
-        r = await client.get(API_URL, timeout=30)
-        data = r.json()
+        # Обновляем состояние
+        last_schedule_state = new_state
+        
+        # Очищаем и пересобираем график (как и раньше)
+        scheduler.remove_all_jobs()
+        scheduler.add_job(update_schedule, "interval", minutes=30)
+        day_schedule.clear()
 
-    blocks = data["components"][4]["schedule"]["dnipro"]["group_5.1"][2]
+        for block in blocks:
+            start_dt = float_time_to_datetime(block["start"])
+            end_dt = float_time_to_datetime(block["end"])
+            day_schedule.append({"type": "start", "time": start_dt})
+            day_schedule.append({"type": "end", "time": end_dt})
+            
+            # Планируем уведомления (логика та же)
+            for t_delta, msg in [(30, "через 30 мин"), (10, "через 10 мин")]:
+                now = datetime.now(TIMEZONE)
+                if start_dt - timedelta(minutes=t_delta) > now:
+                    scheduler.add_job(send_notification, "date", 
+                                      run_date=start_dt - timedelta(minutes=t_delta),
+                                      args=[f"⚠️ Отключение света {msg}!"])
+                if end_dt - timedelta(minutes=t_delta) > now:
+                    scheduler.add_job(send_notification, "date", 
+                                      run_date=end_dt - timedelta(minutes=t_delta),
+                                      args=[f"✅ Включение света {msg}!"])
 
-    for block in blocks:
-        start_dt = float_time_to_datetime(block["start"])
-        end_dt = float_time_to_datetime(block["end"])
+        day_schedule.sort(key=lambda x: x["time"])
+        print("Schedule updated")
 
-        day_schedule.append({"type": "start", "time": start_dt})
-        day_schedule.append({"type": "end", "time": end_dt})
+        # Если график изменился — отправляем новый список
+        if should_notify_change:
+            # Создаем фейковое сообщение для вызова команды schedule_cmd
+            # (Или просто выносим логику формирования текста в отдельную функцию)
+            await send_notification(format_schedule_text())
 
-        # Уведомления
-        scheduler.add_job(
-            send_notification,
-            "date",
-            run_date=start_dt - timedelta(minutes=30),
-            args=["⚠️ Отключение света через 30 минут!"],
-        )
-        scheduler.add_job(
-            send_notification,
-            "date",
-            run_date=start_dt - timedelta(minutes=10),
-            args=["⚠️ Отключение света через 10 минут!"],
-        )
+    except Exception as e:
+        print(f"Ошибка обновления API: {e}")
 
-        scheduler.add_job(
-            send_notification,
-            "date",
-            run_date=end_dt - timedelta(minutes=30),
-            args=["✅ Включение света через 30 минут!"],
-        )
-        scheduler.add_job(
-            send_notification,
-            "date",
-            run_date=end_dt - timedelta(minutes=10),
-            args=["✅ Включение света через 10 минут!"],
-        )
-
-    day_schedule.sort(key=lambda x: x["time"])
-    print("Schedule updated:", day_schedule)
-
+# --- Вспомогательная функция для генерации текста графика ---
+def format_schedule_text():
+    if not day_schedule:
+        return "📅 График на сегодня пуст или еще не загружен."
+    
+    msg = "📅 **График отключений (Группа 5.1):**\n"
+    msg += "--------------------------------------\n"
+    
+    # Обрабатываем список парами (выкл/вкл)
+    for i in range(0, len(day_schedule), 2):
+        try:
+            off_time = day_schedule[i]["time"].strftime("%H:%M")
+            on_time = day_schedule[i+1]["time"].strftime("%H:%M")
+            msg += f"🌑 {off_time} ———— 💡 {on_time}\n"
+        except IndexError:
+            # Если в паре не хватает конечного времени
+            off_time = day_schedule[i]["time"].strftime("%H:%M")
+            msg += f"🌑 {off_time} ———— 💡 ??\n"
+            
+    msg += "\n*Данные обновляются каждые 30 минут.*"
+    return msg
 
 # ---------- commands ----------
 
@@ -131,32 +166,12 @@ async def update_cmd(message: Message):
     await message.answer("📅 График обновлён")
 
 
+# --- Команда бота /schedule ---
 @dp.message(Command("schedule"))
 async def schedule_cmd(message: Message):
-    if not day_schedule:
-        await message.answer("📅 График на сегодня пуст или еще не загружен.")
-        return
-    
-    msg = "📅 **График отключений (Группа 5.1):**\n\n"
-    
-    # Шаг 2 позволяет брать элементы парами: (0,1), (2,3), (4,5)
-    for i in range(0, len(day_schedule), 2):
-        try:
-            # Время выключения (start)
-            off_time = day_schedule[i]["time"].strftime("%H:%M")
-            # Время включения (end)
-            on_time = day_schedule[i+1]["time"].strftime("%H:%M")
-            
-            msg += f"🌑 {off_time} ———— 💡 {on_time}\n"
-        except IndexError:
-            # Если вдруг в списке нечетное количество элементов
-            off_time = day_schedule[i]["time"].strftime("%H:%M")
-            msg += f"🌑 {off_time} ———— 💡 ??\n"
-    
-    msg += "\n*Данные обновляются каждые 30 минут.*"
-    
-    await message.answer(msg, parse_mode="Markdown")
-
+    # Просто вызываем функцию формирования текста и отправляем ответ
+    text = format_schedule_text()
+    await message.answer(text, parse_mode="Markdown")
 
 # ---------- startup ----------
 
@@ -197,5 +212,6 @@ if __name__ == "__main__":
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
